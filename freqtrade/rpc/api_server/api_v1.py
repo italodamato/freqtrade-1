@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 # versions 2.xx -> futures/short branch
 # 2.14: Add entry/exit orders to trade response
 # 2.15: Add backtest history endpoints
-API_VERSION = 2.15
+# 2.16: Additional daily metrics
+API_VERSION = 2.16
 
 # Public API, requires no auth.
 router_public = APIRouter()
@@ -281,7 +282,7 @@ def get_strategy(strategy: str, config=Depends(get_config)):
 def list_available_pairs(timeframe: Optional[str] = None, stake_currency: Optional[str] = None,
                          candletype: Optional[CandleType] = None, config=Depends(get_config)):
 
-    dh = get_datahandler(config['datadir'], config.get('dataformat_ohlcv', None))
+    dh = get_datahandler(config['datadir'], config.get('dataformat_ohlcv'))
     trading_mode: TradingMode = config.get('trading_mode', TradingMode.SPOT)
     pair_interval = dh.ohlcv_get_available_data(config['datadir'], trading_mode)
 

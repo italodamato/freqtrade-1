@@ -18,6 +18,7 @@ from freqtrade import __version__
 from freqtrade.configuration.timerange import TimeRange
 from freqtrade.constants import CANCEL_REASON, DATETIME_PRINT_FORMAT
 from freqtrade.data.history import load_data
+from freqtrade.data.metrics import calculate_max_drawdown
 from freqtrade.enums import (CandleType, ExitCheckTuple, ExitType, SignalDirection, State,
                              TradingMode)
 from freqtrade.exceptions import ExchangeError, PricingError
@@ -96,7 +97,7 @@ class RPC:
         """
         self._freqtrade = freqtrade
         self._config: Dict[str, Any] = freqtrade.config
-        if self._config.get('fiat_display_currency', None):
+        if self._config.get('fiat_display_currency'):
             self._fiat_converter = CryptoToFiatConverter()
 
     @staticmethod
@@ -302,10 +303,11 @@ class RPC:
                 return relativedelta(months=step)
             return timedelta(**{timeunit: step})
 
-        profit_units: Dict[date, Dict] = {}
-
         if not (isinstance(timescale, int) and timescale > 0):
             raise RPCException('timescale must be an integer greater than 0')
+
+        profit_units: Dict[date, Dict] = {}
+        daily_stake = self._freqtrade.wallets.get_total_stake_amount()
 
         for day in range(0, timescale):
             profitday = start_date - time_offset(day)
@@ -318,8 +320,12 @@ class RPC:
 
             curdayprofit = sum(
                 trade.close_profit_abs for trade in trades if trade.close_profit_abs is not None)
+            # Calculate this periods starting balance
+            daily_stake = daily_stake - curdayprofit
             profit_units[profitday] = {
                 'amount': curdayprofit,
+                'daily_stake': daily_stake,
+                'rel_profit': round(curdayprofit / daily_stake, 8) if daily_stake > 0 else 0,
                 'trades': len(trades),
             }
 
@@ -327,6 +333,8 @@ class RPC:
             {
                 'date': f"{key.year}-{key.month:02d}" if timeunit == 'months' else key,
                 'abs_profit': value["amount"],
+                'starting_balance': value["daily_stake"],
+                'rel_profit': value["rel_profit"],
                 'fiat_value': self._fiat_converter.convert_amount(
                     value['amount'],
                     stake_currency,
@@ -357,6 +365,7 @@ class RPC:
         return {
             "trades": output,
             "trades_count": len(output),
+            "offset": offset,
             "total_trades": Trade.get_trades([Trade.is_open.is_(False)]).count(),
         }
 
@@ -371,7 +380,7 @@ class RPC:
                 return 'losses'
             else:
                 return 'draws'
-        trades: List[Trade] = Trade.get_trades([Trade.is_open.is_(False)])
+        trades: List[Trade] = Trade.get_trades([Trade.is_open.is_(False)], include_orders=False)
         # Sell reason
         exit_reasons = {}
         for trade in trades:
@@ -399,7 +408,8 @@ class RPC:
         """ Returns cumulative profit statistics """
         trade_filter = ((Trade.is_open.is_(False) & (Trade.close_date >= start_date)) |
                         Trade.is_open.is_(True))
-        trades: List[Trade] = Trade.get_trades(trade_filter).order_by(Trade.id).all()
+        trades: List[Trade] = Trade.get_trades(
+            trade_filter, include_orders=False).order_by(Trade.id).all()
 
         profit_all_coin = []
         profit_all_ratio = []
@@ -408,6 +418,8 @@ class RPC:
         durations = []
         winning_trades = 0
         losing_trades = 0
+        winning_profit = 0.0
+        losing_profit = 0.0
 
         for trade in trades:
             current_rate: float = 0.0
@@ -423,8 +435,10 @@ class RPC:
                 profit_closed_ratio.append(profit_ratio)
                 if trade.close_profit >= 0:
                     winning_trades += 1
+                    winning_profit += trade.close_profit_abs
                 else:
                     losing_trades += 1
+                    losing_profit += trade.close_profit_abs
             else:
                 # Get current rate
                 try:
@@ -440,6 +454,7 @@ class RPC:
             profit_all_ratio.append(profit_ratio)
 
         best_pair = Trade.get_best_pair(start_date)
+        trading_volume = Trade.get_trading_volume(start_date)
 
         # Prepare data to display
         profit_closed_coin_sum = round(sum(profit_closed_coin), 8)
@@ -462,6 +477,21 @@ class RPC:
         if starting_balance:
             profit_closed_ratio_fromstart = profit_closed_coin_sum / starting_balance
             profit_all_ratio_fromstart = profit_all_coin_sum / starting_balance
+
+        profit_factor = winning_profit / abs(losing_profit) if losing_profit else float('inf')
+
+        trades_df = DataFrame([{'close_date': trade.close_date.strftime(DATETIME_PRINT_FORMAT),
+                                'profit_abs': trade.close_profit_abs}
+                               for trade in trades if not trade.is_open])
+        max_drawdown_abs = 0.0
+        max_drawdown = 0.0
+        if len(trades_df) > 0:
+            try:
+                (max_drawdown_abs, _, _, _, _, max_drawdown) = calculate_max_drawdown(
+                    trades_df, value_col='profit_abs', starting_balance=starting_balance)
+            except ValueError:
+                # ValueError if no losing trade.
+                pass
 
         profit_all_fiat = self._fiat_converter.convert_amount(
             profit_all_coin_sum,
@@ -501,11 +531,15 @@ class RPC:
             'best_pair_profit_ratio': best_pair[1] if best_pair else 0,
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
+            'profit_factor': profit_factor,
+            'max_drawdown': max_drawdown,
+            'max_drawdown_abs': max_drawdown_abs,
+            'trading_volume': trading_volume,
         }
 
     def _rpc_balance(self, stake_currency: str, fiat_display_currency: str) -> Dict:
         """ Returns current account balance per crypto """
-        currencies = []
+        currencies: List[Dict] = []
         total = 0.0
         try:
             tickers = self._freqtrade.exchange.get_tickers(cached=True)
@@ -532,7 +566,7 @@ class RPC:
             else:
                 try:
                     pair = self._freqtrade.exchange.get_valid_pair_combination(coin, stake_currency)
-                    rate = tickers.get(pair, {}).get('last', None)
+                    rate = tickers.get(pair, {}).get('last')
                     if rate:
                         if pair.startswith(stake_currency) and not pair.endswith(stake_currency):
                             rate = 1.0 / rate
@@ -540,13 +574,12 @@ class RPC:
                 except (ExchangeError):
                     logger.warning(f" Could not get rate for pair {coin}.")
                     continue
-            total = total + (est_stake or 0)
+            total = total + est_stake
             currencies.append({
                 'currency': coin,
-                # TODO: The below can be simplified if we don't assign None to values.
-                'free': balance.free if balance.free is not None else 0,
-                'balance': balance.total if balance.total is not None else 0,
-                'used': balance.used if balance.used is not None else 0,
+                'free': balance.free,
+                'balance': balance.total,
+                'used': balance.used,
                 'est_stake': est_stake or 0,
                 'stake': stake_currency,
                 'side': 'long',
@@ -576,7 +609,6 @@ class RPC:
             total, stake_currency, fiat_display_currency) if self._fiat_converter else 0
 
         trade_count = len(Trade.get_trades_proxy())
-        starting_capital_ratio = 0.0
         starting_capital_ratio = (total / starting_capital) - 1 if starting_capital else 0.0
         starting_cap_fiat_ratio = (value / starting_cap_fiat) - 1 if starting_cap_fiat else 0.0
 
@@ -864,7 +896,7 @@ class RPC:
             else:
                 errors[pair] = {
                     'error_msg': f"Pair {pair} is not in the current blacklist."
-                    }
+                }
         resp = self._rpc_blacklist()
         resp['errors'] = errors
         return resp
