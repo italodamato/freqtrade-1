@@ -590,9 +590,11 @@ class Hyperopt:
 
         if objective and res.models:
             ax = plot_objective(res, sample_source='result', n_samples=50, n_points=10)
-            [chart.set_ylim(ymin=res.fun, ymax=0) for chart in ax.flatten()
-             if chart.get_ylabel() == 'Partial dependence' and chart.get_ylim()[1] > 0]
             try:
+                [
+                    chart.set_ylim(ymin=res.fun, ymax=0) for chart in ax.flatten()
+                    if chart.get_ylabel() == 'Partial dependence' and chart.get_ylim()[1] > 0
+                ]
                 ax.flatten()[0].figure.savefig(path / 'objective.png')
             except AttributeError:
                 ax.figure.savefig(path / 'evaluations.png')
