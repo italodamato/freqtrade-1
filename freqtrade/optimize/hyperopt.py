@@ -611,4 +611,4 @@ class Hyperopt:
                 ]
                 ax.flatten()[0].figure.savefig(path / 'objective.png')
             except AttributeError:
-                ax.figure.savefig(path / 'evaluations.png')
+                ax.figure.savefig(path / 'objective.png')
