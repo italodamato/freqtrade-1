@@ -42,6 +42,7 @@ from freqtrade.resolvers.hyperopt_resolver import HyperOptLossResolver
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=FutureWarning)
     from skopt import Optimizer
+    from skopt.plots import plot_evaluations, plot_objective
     from skopt.space import Dimension
 
 progressbar.streams.wrap_stderr()
@@ -474,11 +475,13 @@ class Hyperopt:
         is_random_non_tried: List[bool] = []
         while i < 5 and len(asked_non_tried) < n_points:
             if i < 3:
+                print('a')
                 self.opt.cache_ = {}
-                asked = unique_list(self.opt.ask(n_points=n_points * 5))
+                asked = unique_list(self.opt.ask(n_points=n_points * 10))
                 is_random = [False for _ in range(len(asked))]
             else:
-                asked = unique_list(self.opt.space.rvs(n_samples=n_points * 5))
+                print('b')
+                asked = unique_list(self.opt.space.rvs(n_samples=n_points * 10))
                 is_random = [True for _ in range(len(asked))]
             is_random_non_tried += [rand for x, rand in zip(asked, is_random)
                                     if x not in self.opt.Xi
@@ -489,11 +492,13 @@ class Hyperopt:
             i += 1
 
         if asked_non_tried:
+            print('c')
             return (
                 asked_non_tried[:min(len(asked_non_tried), n_points)],
                 is_random_non_tried[:min(len(asked_non_tried), n_points)]
             )
         else:
+            print('d')
             return self.opt.ask(n_points=n_points), [False for _ in range(n_points)]
 
     def get_progressbar_widgets(self):
@@ -604,7 +609,8 @@ class Hyperopt:
 
                         asked, is_random = self.get_asked_points(n_points=current_jobs)
                         f_val = self.run_optimizer_parallel(parallel, asked)
-                        self.opt.tell(asked, [v['loss'] for v in f_val])
+                        res = self.opt.tell(asked, [v['loss'] for v in f_val])
+                        self.plot_optimizer(res, path='user_data/scripts')
 
                         # Calculate progressbar outputs
                         for j, val in enumerate(f_val):
@@ -633,3 +639,23 @@ class Hyperopt:
             # This is printed when Ctrl+C is pressed quickly, before first epochs have
             # a chance to be evaluated.
             print("No epochs evaluated yet, no best result.")
+
+    def plot_optimizer(self, res, path, evaluations=True, objective=True):
+        path = Path(path)
+        if evaluations:
+            ax = plot_evaluations(res)
+            try:
+                ax.flatten()[0].figure.savefig(path / 'evaluations.png')
+            except AttributeError:
+                ax.figure.savefig(path / 'evaluations.png')
+
+        if objective and res.models:
+            ax = plot_objective(res, sample_source='result', n_samples=50, n_points=10)
+            try:
+                [
+                    chart.set_ylim(ymin=res.fun, ymax=0) for chart in ax.flatten()
+                    if chart.get_ylabel() == 'Partial dependence' and chart.get_ylim()[1] > 0
+                ]
+                ax.flatten()[0].figure.savefig(path / 'objective.png')
+            except AttributeError:
+                ax.figure.savefig(path / 'objective.png')
