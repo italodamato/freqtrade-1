@@ -3,9 +3,9 @@
 """
 bot constants
 """
-from typing import List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
-from freqtrade.enums import CandleType
+from freqtrade.enums import CandleType, RPCMessageType
 
 
 DEFAULT_CONFIG = 'config.json'
@@ -31,12 +31,13 @@ HYPEROPT_LOSS_BUILTIN = ['ShortTradeDurHyperOptLoss', 'OnlyProfitHyperOptLoss',
                          'CalmarHyperOptLoss',
                          'MaxDrawDownHyperOptLoss', 'MaxDrawDownRelativeHyperOptLoss',
                          'ProfitDrawDownHyperOptLoss']
-AVAILABLE_PAIRLISTS = ['StaticPairList', 'VolumePairList',
+AVAILABLE_PAIRLISTS = ['StaticPairList', 'VolumePairList', 'ProducerPairList',
                        'AgeFilter', 'OffsetFilter', 'PerformanceFilter',
                        'PrecisionFilter', 'PriceFilter', 'RangeStabilityFilter',
                        'ShuffleFilter', 'SpreadFilter', 'VolatilityFilter']
 AVAILABLE_PROTECTIONS = ['CooldownPeriod', 'LowProfitPairs', 'MaxDrawdown', 'StoplossGuard']
-AVAILABLE_DATAHANDLERS = ['json', 'jsongz', 'hdf5']
+AVAILABLE_DATAHANDLERS_TRADES = ['json', 'jsongz', 'hdf5']
+AVAILABLE_DATAHANDLERS = AVAILABLE_DATAHANDLERS_TRADES + ['feather', 'parquet']
 BACKTEST_BREAKDOWNS = ['day', 'week', 'month']
 BACKTEST_CACHE_AGE = ['none', 'day', 'week', 'month']
 BACKTEST_CACHE_DEFAULT = 'day'
@@ -158,6 +159,7 @@ CONF_SCHEMA = {
         'ignore_buying_expired_candle_after': {'type': 'number'},
         'trading_mode': {'type': 'string', 'enum': TRADING_MODES},
         'margin_mode': {'type': 'string', 'enum': MARGIN_MODES},
+        'reduce_df_footprint': {'type': 'boolean', 'default': False},
         'liquidation_buffer': {'type': 'number', 'minimum': 0.0, 'maximum': 0.99},
         'backtest_breakdown': {
             'type': 'array',
@@ -243,6 +245,7 @@ CONF_SCHEMA = {
         'exchange': {'$ref': '#/definitions/exchange'},
         'edge': {'$ref': '#/definitions/edge'},
         'freqai': {'$ref': '#/definitions/freqai'},
+        'external_message_consumer': {'$ref': '#/definitions/external_message_consumer'},
         'experimental': {
             'type': 'object',
             'properties': {
@@ -280,6 +283,7 @@ CONF_SCHEMA = {
                 'enabled': {'type': 'boolean'},
                 'token': {'type': 'string'},
                 'chat_id': {'type': 'string'},
+                'allow_custom_messages': {'type': 'boolean', 'default': True},
                 'balance_dust_level': {'type': 'number', 'minimum': 0.0},
                 'notification_settings': {
                     'type': 'object',
@@ -289,11 +293,12 @@ CONF_SCHEMA = {
                         'warning': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
                         'startup': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
                         'entry': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
-                        'entry_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
-                        'entry_fill': {'type': 'string',
-                                       'enum': TELEGRAM_SETTING_OPTIONS,
-                                       'default': 'off'
-                                       },
+                        'entry_fill': {
+                            'type': 'string',
+                            'enum': TELEGRAM_SETTING_OPTIONS,
+                            'default': 'off'
+                        },
+                        'entry_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS, },
                         'exit': {
                             'type': ['string', 'object'],
                             'additionalProperties': {
@@ -301,12 +306,12 @@ CONF_SCHEMA = {
                                 'enum': TELEGRAM_SETTING_OPTIONS
                             }
                         },
-                        'exit_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
                         'exit_fill': {
                             'type': 'string',
                             'enum': TELEGRAM_SETTING_OPTIONS,
                             'default': 'on'
                         },
+                        'exit_cancel': {'type': 'string', 'enum': TELEGRAM_SETTING_OPTIONS},
                         'protection_trigger': {
                             'type': 'string',
                             'enum': TELEGRAM_SETTING_OPTIONS,
@@ -315,14 +320,17 @@ CONF_SCHEMA = {
                         'protection_trigger_global': {
                             'type': 'string',
                             'enum': TELEGRAM_SETTING_OPTIONS,
+                            'default': 'on'
                         },
                         'show_candle': {
                             'type': 'string',
                             'enum': ['off', 'ohlc'],
+                            'default': 'off'
                         },
                         'strategy_msg': {
                             'type': 'string',
                             'enum': TELEGRAM_SETTING_OPTIONS,
+                            'default': 'on'
                         },
                     }
                 },
@@ -338,6 +346,8 @@ CONF_SCHEMA = {
                 'format': {'type': 'string', 'enum': WEBHOOK_FORMAT_OPTIONS, 'default': 'form'},
                 'retries': {'type': 'integer', 'minimum': 0},
                 'retry_delay': {'type': 'number', 'minimum': 0},
+                **dict([(x, {'type': 'object'}) for x in RPCMessageType]),
+                # Below -> Deprecated
                 'webhookentry': {'type': 'object'},
                 'webhookentrycancel': {'type': 'object'},
                 'webhookentryfill': {'type': 'object'},
@@ -400,6 +410,7 @@ CONF_SCHEMA = {
                 },
                 'username': {'type': 'string'},
                 'password': {'type': 'string'},
+                'ws_token': {'type': ['string', 'array'], 'items': {'type': 'string'}},
                 'jwt_secret_key': {'type': 'string'},
                 'CORS_origins': {'type': 'array', 'items': {'type': 'string'}},
                 'verbosity': {'type': 'string', 'enum': ['error', 'info']},
@@ -428,7 +439,7 @@ CONF_SCHEMA = {
         },
         'dataformat_trades': {
             'type': 'string',
-            'enum': AVAILABLE_DATAHANDLERS,
+            'enum': AVAILABLE_DATAHANDLERS_TRADES,
             'default': 'jsongz'
         },
         'position_adjustment_enable': {'type': 'boolean'},
@@ -484,12 +495,55 @@ CONF_SCHEMA = {
             },
             'required': ['process_throttle_secs', 'allowed_risk']
         },
+        'external_message_consumer': {
+            'type': 'object',
+            'properties': {
+                'enabled': {'type': 'boolean', 'default': False},
+                'producers': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'object',
+                        'properties': {
+                            'name': {'type': 'string'},
+                            'host': {'type': 'string'},
+                            'port': {
+                                'type': 'integer',
+                                'default': 8080,
+                                'minimum': 0,
+                                'maximum': 65535
+                            },
+                            'ws_token': {'type': 'string'},
+                        },
+                        'required': ['name', 'host', 'ws_token']
+                    }
+                },
+                'wait_timeout': {'type': 'integer', 'minimum': 0},
+                'sleep_time': {'type': 'integer', 'minimum': 0},
+                'ping_timeout': {'type': 'integer', 'minimum': 0},
+                'remove_entry_exit_signals': {'type': 'boolean', 'default': False},
+                'initial_candle_limit': {
+                    'type': 'integer',
+                    'minimum': 0,
+                    'maximum': 1500,
+                    'default': 1500
+                },
+                'message_size_limit': {  # In megabytes
+                    'type': 'integer',
+                    'minimum': 1,
+                    'maxmium': 20,
+                    'default': 8,
+                }
+            },
+            'required': ['producers']
+        },
         "freqai": {
             "type": "object",
             "properties": {
                 "enabled": {"type": "boolean", "default": False},
                 "keras": {"type": "boolean", "default": False},
-                "conv_width": {"type": "integer", "default": 2},
+                "write_metrics_to_disk": {"type": "boolean", "default": False},
+                "purge_old_models": {"type": "boolean", "default": True},
+                "conv_width": {"type": "integer", "default": 1},
                 "train_period_days": {"type": "integer", "default": 0},
                 "backtest_period_days": {"type": "number", "default": 7},
                 "identifier": {"type": "string", "default": "example"},
@@ -504,6 +558,7 @@ CONF_SCHEMA = {
                         "weight_factor": {"type": "number", "default": 0},
                         "principal_component_analysis": {"type": "boolean", "default": False},
                         "use_SVM_to_remove_outliers": {"type": "boolean", "default": False},
+                        "plot_feature_importances": {"type": "integer", "default": 0},
                         "svm_params": {"type": "object",
                                        "properties": {
                                            "shuffle": {"type": "boolean", "default": False},
@@ -518,6 +573,7 @@ CONF_SCHEMA = {
                     "properties": {
                         "test_size": {"type": "number"},
                         "random_state": {"type": "integer"},
+                        "shuffle": {"type": "boolean", "default": False}
                     },
                 },
                 "model_training_parameters": {
@@ -603,3 +659,6 @@ LongShort = Literal['long', 'short']
 EntryExit = Literal['entry', 'exit']
 BuySell = Literal['buy', 'sell']
 MakerTaker = Literal['maker', 'taker']
+BidAsk = Literal['bid', 'ask']
+
+Config = Dict[str, Any]

@@ -5,29 +5,8 @@ import pytest
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import CandleType
 from freqtrade.resolvers.strategy_resolver import StrategyResolver
-from freqtrade.strategy import (merge_informative_pair, stoploss_from_absolute, stoploss_from_open,
-                                timeframe_to_minutes)
-from tests.conftest import get_patched_exchange
-
-
-def generate_test_data(timeframe: str, size: int, start: str = '2020-07-05'):
-    np.random.seed(42)
-    tf_mins = timeframe_to_minutes(timeframe)
-
-    base = np.random.normal(20, 2, size=size)
-
-    date = pd.date_range(start, periods=size, freq=f'{tf_mins}min', tz='UTC')
-    df = pd.DataFrame({
-        'date': date,
-        'open': base,
-        'high': base + np.random.normal(2, 1, size=size),
-        'low': base - np.random.normal(2, 1, size=size),
-        'close': base + np.random.normal(0, 1, size=size),
-        'volume': np.random.normal(200, size=size)
-    }
-    )
-    df = df.dropna()
-    return df
+from freqtrade.strategy import merge_informative_pair, stoploss_from_absolute, stoploss_from_open
+from tests.conftest import generate_test_data, get_patched_exchange
 
 
 def test_merge_informative_pair():
@@ -115,6 +94,29 @@ def test_merge_informative_pair_lower():
 
     with pytest.raises(ValueError, match=r"Tried to merge a faster timeframe .*"):
         merge_informative_pair(data, informative, '1h', '15m', ffill=True)
+
+
+def test_merge_informative_pair_suffix():
+    data = generate_test_data('15m', 20)
+    informative = generate_test_data('1h', 20)
+
+    result = merge_informative_pair(data, informative, '15m', '1h',
+                                    append_timeframe=False, suffix="suf")
+
+    assert 'date' in result.columns
+    assert result['date'].equals(data['date'])
+    assert 'date_suf' in result.columns
+
+    assert 'open_suf' in result.columns
+    assert 'open_1h' not in result.columns
+
+
+def test_merge_informative_pair_suffix_append_timeframe():
+    data = generate_test_data('15m', 20)
+    informative = generate_test_data('1h', 20)
+
+    with pytest.raises(ValueError, match=r"You can not specify `append_timeframe` .*"):
+        merge_informative_pair(data, informative, '15m', '1h', suffix="suf")
 
 
 def test_stoploss_from_open():
