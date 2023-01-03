@@ -2672,8 +2672,7 @@ class Exchange:
 
         if not df.empty:
             df = df[(df['date'] >= open_date) & (df['date'] <= close_date)]
-            open_fund_clipped = df['open_fund'].clip(lower=0) if not is_short else df['open_fund'].clip(upper=0)
-            fees = sum(open_fund_clipped * df['open_mark'] * amount)
+            fees = sum(df['open_fund'] * df['open_mark'] * amount)
 
         # Negate fees for longs as funding_fees expects it this way based on live endpoints.
         return fees if is_short else -fees
